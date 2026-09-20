@@ -49,9 +49,9 @@ def _(mo):
     mo.md(
         r"""
         <small>Also in this series:
-        <a href="r/">the R version</a> (gdalraster, wk, ximage; rendered on two Ubuntu runners) |
-        <a href="wasm/">the browser version</a> (pyproj in Pyodide) |
-        <a href="https://github.com/mdsumner/spilhaus-tracker">source</a> |
+        <a href="../r/">the R version</a> (gdalraster, wk, ximage; rendered on two Ubuntu runners) |
+        <a href="../wasm/">the browser version</a> (pyproj in Pyodide) |
+        <a href="../">index</a> | <a href="https://github.com/mdsumner/spilhaus-tracker">source</a> |
         <a href="https://www.hypertidy.org/posts/2026-09-20_road-to-spilhaus/">the story so far</a></small>
 
         # Spilhaus, as it flows downstream from PROJ

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spilhaus tracker</title>
+<style>
+  body { font: 16px/1.55 system-ui, sans-serif; max-width: 44rem; margin: 3rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.6rem; margin-bottom: .2rem; }
+  h2 { font-size: 1.1rem; margin-top: 1.8rem; }
+  p.lede { color: #555; margin-top: 0; }
+  li { margin: .45rem 0; }
+  code { background: #f3f3f3; padding: .1em .3em; border-radius: 3px; }
+  img { max-width: 100%; border: 1px solid #ddd; margin-top: 1rem; }
+  footer { margin-top: 2.5rem; font-size: .9rem; color: #666; }
+</style>
+</head>
+<body>
+<h1>Spilhaus, as it flows downstream from PROJ</h1>
+<p class="lede"><code>+proj=spilhaus</code> arrived in PROJ 9.6.0 (March 2025). Which of your tools can use it
+depends on which PROJ each one carries. These pages draw the same map in several runtimes and, more
+to the point, print the table of who has what.</p>
+
+<h2>The pages</h2>
+<ul>
+  <li><a href="python/">Python notebook</a> - pip environment; pyproj, rasterio, pyogrio and the GDAL
+      bindings each with their own PROJ. Bathymetry over <code>/vsicurl</code>, Natural Earth, landmarks,
+      the WKT question, and a second member of the family.</li>
+  <li><a href="r/">R version</a> - gdalraster, wk and ximage, rendered on two Ubuntu runners that differ
+      only in the system GDAL/PROJ: <a href="r/apt/">stock apt</a> and <a href="r/ubuntugis/">ubuntugis-unstable</a>.</li>
+  <li><a href="wasm/">Browser version</a> - the vector half, run by pyproj inside Pyodide. One more PROJ to ask.</li>
+</ul>
+
+<h2>Run it yourself</h2>
+<ul>
+  <li><code>uvx marimo edit --sandbox spilhaus.py</code> (<a href="spilhaus.py">source</a>)</li>
+  <li><code>quarto render spilhaus.qmd</code> (<a href="spilhaus.qmd">source</a>)</li>
+  <li><a href="spilhaus_wasm.py">spilhaus_wasm.py</a> for the browser build</li>
+</ul>
+
+<a href="python/"><img src="python/spilhaus_composite.png" alt="The world ocean in the Spilhaus projection, from the Python notebook"></a>
+
+<footer>
+  <a href="https://github.com/mdsumner/spilhaus-tracker">github.com/mdsumner/spilhaus-tracker</a> |
+  <a href="https://www.hypertidy.org/posts/2026-09-20_road-to-spilhaus/">the story so far</a> |
+  rebuilt weekly so the tables track upstream.
+</footer>
+</body>
+</html>

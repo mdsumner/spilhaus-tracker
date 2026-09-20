@@ -80,7 +80,8 @@ table. If that PROJ predates 9.6 the page says so and stops.
 `.github/workflows/pages.yml` builds both on every push and on a weekly
 schedule, and publishes to GitHub Pages:
 
-- `/` - static HTML export of `spilhaus.py` with outputs baked in (runs the
+- `/` - index linking everything below;
+- `/python/` - static HTML export of `spilhaus.py` with outputs baked in (runs the
   real warp against GEBCO in the Action);
 - `/wasm/` - the Pyodide export of `spilhaus_wasm.py`;
 - `/r/apt/` and `/r/ubuntugis/` - `spilhaus.qmd` rendered against each system GDAL/PROJ.
