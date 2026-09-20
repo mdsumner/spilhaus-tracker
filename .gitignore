@@ -2,3 +2,5 @@ site/
 __marimo__/
 __pycache__/
 *.tif
+.Rproj.user/
+spilhaus-tracker.Rproj
