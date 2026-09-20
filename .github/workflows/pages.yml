@@ -66,39 +66,84 @@ jobs:
         include:
           # Stock Ubuntu 24.04: GDAL 3.8.4 / PROJ 9.4.0. Expected to have no Spilhaus.
           - name: apt
+            method: apt
             ppa: ""
-          # ubuntugis-unstable: whatever GDAL/PROJ that PPA currently carries.
+          # ubuntugis-unstable: newer GDAL, but PROJ is whatever the PPA carries (9.4.x at time of writing).
           - name: ubuntugis
+            method: apt
             ppa: "ppa:ubuntugis/ubuntugis-unstable"
+          # conda-forge: one libproj shared by every package, prebuilt. The R analogue of "it just works".
+          - name: conda-forge
+            method: conda
+            ppa: ""
+    defaults:
+      run:
+        shell: bash -leo pipefail {0}
     steps:
       - uses: actions/checkout@v4
 
+      # ---------- apt-based variants ----------
       - name: System GDAL and PROJ (${{ matrix.name }})
+        if: matrix.method == 'apt'
         run: |
           if [ -n "${{ matrix.ppa }}" ]; then
             sudo add-apt-repository -y "${{ matrix.ppa }}"
           fi
           sudo apt-get update -q
           sudo apt-get install -y -q gdal-bin proj-bin libgdal-dev libproj-dev libgeos-dev libudunits2-dev libsqlite3-dev
-          gdalinfo --version; projinfo --version || true
+          gdalinfo --version; proj 2>&1 | head -1 || true
 
       - uses: r-lib/actions/setup-r@v2
+        if: matrix.method == 'apt'
         with:
           use-public-rspm: true
 
       - uses: quarto-dev/quarto-actions/setup@v2
+        if: matrix.method == 'apt'
 
-      # gdalraster, sf, terra, vapour, PROJ are built from source here so they link the
-      # system GDAL/PROJ installed above; pure-R packages come as binaries from P3M.
-      - name: Install R packages
+      # Pure-R packages as P3M binaries. Anything that links GDAL/PROJ must be compiled here
+      # against the system libraries just installed, so those come from CRAN as real source
+      # (P3M's linux repo serves binaries even when asked for source, which is how a
+      # gdalraster built against libgdal.so.34 ended up next to GDAL 3.11 in the first run).
+      - name: Install R packages (apt variants)
+        if: matrix.method == 'apt'
         run: |
           Rscript -e '
-            options(repos = c(hypertidy = "https://hypertidy.r-universe.dev",
-                              CRAN = "https://packagemanager.posit.co/cran/__linux__/noble/latest"))
-            install.packages(c("knitr", "rmarkdown", "wk", "ximage"))
-            install.packages(c("gdalraster", "sf", "terra", "vapour", "PROJ"), type = "source")
+            options(Ncpus = 4)
+            install.packages(c("knitr", "rmarkdown", "wk"),
+                             repos = "https://packagemanager.posit.co/cran/__linux__/noble/latest")
+            install.packages(c("gdalraster", "sf", "terra"), repos = "https://cloud.r-project.org", type = "source")
+            install.packages(c("ximage", "vapour", "PROJ"), repos = "https://hypertidy.r-universe.dev", type = "source")
           '
 
+      # ---------- conda-forge variant ----------
+      - uses: mamba-org/setup-micromamba@v2
+        if: matrix.method == 'conda'
+        with:
+          environment-name: spilhaus
+          create-args: >-
+            r-base
+            r-knitr
+            r-rmarkdown
+            r-wk
+            r-sf
+            r-terra
+            r-gdalraster
+            gdal
+            proj
+            quarto
+            compilers
+          cache-environment: true
+
+      - name: Install the rest from r-universe (conda variant)
+        if: matrix.method == 'conda'
+        run: |
+          gdalinfo --version; proj 2>&1 | head -1 || true
+          Rscript -e '
+            install.packages(c("ximage", "vapour", "PROJ"), repos = "https://hypertidy.r-universe.dev", type = "source")
+          '
+
+      # ---------- render, both variants ----------
       - name: Render
         env:
           SPILHAUS_NPIX: "1600"
