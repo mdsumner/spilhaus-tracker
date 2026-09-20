@@ -4,3 +4,6 @@ __pycache__/
 *.tif
 .Rproj.user/
 spilhaus-tracker.Rproj
+spilhaus.html
+*_files/
+.Rhistory

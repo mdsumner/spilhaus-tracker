@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   schedule:
-    # weekly, so the provenance table re-resolves against current wheels
+    # weekly, so the provenance tables re-resolve against current wheels and binaries
     - cron: "17 3 * * 1"
   workflow_dispatch:
 
@@ -18,11 +18,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: astral-sh/setup-uv@v6
 
       # System GDAL/PROJ so the CLI probes (gdalwarp, projinfo) have something to find.
@@ -39,9 +38,9 @@ jobs:
           GDAL_HTTP_MAX_RETRY: "5"
           GDAL_HTTP_RETRY_DELAY: "2"
         run: |
-          mkdir -p site
-          uvx marimo export html --sandbox spilhaus.py -o site/index.html
-          cp spilhaus_composite.png site/ || true
+          mkdir -p site/python
+          uvx marimo export html --sandbox spilhaus.py -o site/python/index.html
+          cp spilhaus_composite.png site/python/ || true
 
       - name: Export browser notebook (WASM)
         run: |
@@ -49,15 +48,94 @@ jobs:
 
       - name: Copy sources alongside the pages
         run: |
-          cp spilhaus.py spilhaus_wasm.py README.md site/
+          cp spilhaus.py spilhaus_wasm.py spilhaus.qmd README.md site/
+          cp site-index.html site/index.html
+          mkdir -p site/r && cp r-index.html site/r/index.html
           touch site/.nojekyll
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-python
+          path: site
+
+  r:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Stock Ubuntu 24.04: GDAL 3.8.4 / PROJ 9.4.0. Expected to have no Spilhaus.
+          - name: apt
+            ppa: ""
+          # ubuntugis-unstable: whatever GDAL/PROJ that PPA currently carries.
+          - name: ubuntugis
+            ppa: "ppa:ubuntugis/ubuntugis-unstable"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System GDAL and PROJ (${{ matrix.name }})
+        run: |
+          if [ -n "${{ matrix.ppa }}" ]; then
+            sudo add-apt-repository -y "${{ matrix.ppa }}"
+          fi
+          sudo apt-get update -q
+          sudo apt-get install -y -q gdal-bin proj-bin libgdal-dev libproj-dev libgeos-dev libudunits2-dev libsqlite3-dev
+          gdalinfo --version; projinfo --version || true
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - uses: quarto-dev/quarto-actions/setup@v2
+
+      # gdalraster, sf, terra, vapour, PROJ are built from source here so they link the
+      # system GDAL/PROJ installed above; pure-R packages come as binaries from P3M.
+      - name: Install R packages
+        run: |
+          Rscript -e '
+            options(repos = c(hypertidy = "https://hypertidy.r-universe.dev",
+                              CRAN = "https://packagemanager.posit.co/cran/__linux__/noble/latest"))
+            install.packages(c("knitr", "rmarkdown", "wk", "ximage"))
+            install.packages(c("gdalraster", "sf", "terra", "vapour", "PROJ"), type = "source")
+          '
+
+      - name: Render
+        env:
+          SPILHAUS_NPIX: "1600"
+          GDAL_HTTP_MAX_RETRY: "5"
+          GDAL_HTTP_RETRY_DELAY: "2"
+        run: |
+          mkdir -p out/r/${{ matrix.name }}
+          quarto render spilhaus.qmd --output index.html --output-dir out/r/${{ matrix.name }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-r-${{ matrix.name }}
+          path: out
+
+  assemble:
+    needs: [python, r]
+    if: always() && needs.python.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: site-python
+          path: site
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: site-r-*
+          path: site
+          merge-multiple: true
+        continue-on-error: true
+      - name: Show the tree
+        run: ls -R site | head -60
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
   deploy:
-    needs: build
+    needs: assemble
     runs-on: ubuntu-latest
     environment:
       name: github-pages
