@@ -13,11 +13,12 @@
 </head>
 <body>
 <h1>Spilhaus, as it flows downstream from PROJ: R</h1>
-<p>The same document rendered on two Ubuntu runners that differ only in which
-GDAL and PROJ the system carries. Each page's first table says what that runner had.</p>
+<p>The same document rendered on three Ubuntu runners that differ only in where
+GDAL and PROJ come from. Each page's first table says what that runner had.</p>
 <ul>
   <li><a href="apt/">stock Ubuntu 24.04 (apt)</a> - GDAL 3.8.4 / PROJ 9.4.0 at the time of writing; no Spilhaus expected</li>
-  <li><a href="ubuntugis/">ubuntugis-unstable PPA</a> - whatever that PPA currently ships</li>
+  <li><a href="ubuntugis/">ubuntugis-unstable PPA</a> - newer GDAL, but PROJ is whatever the PPA carries</li>
+  <li><a href="conda-forge/">conda-forge</a> - one libproj shared by every package, all prebuilt</li>
 </ul>
 <p>Companions: <a href="../">index</a>, <a href="../python/">the Python notebook</a>, <a href="../wasm/">the browser version</a>,
 and the source <a href="../spilhaus.qmd"><code>spilhaus.qmd</code></a>.</p>

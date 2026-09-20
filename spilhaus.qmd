@@ -62,49 +62,87 @@ One row per package. `spilhaus` is the result of asking that package to make
 a CRS from `+proj=spilhaus`.
 
 ```{r provenance}
-probe <- function(expr) {
-  out <- tryCatch({ force(expr); "ok" }, error = function(e) paste("FAIL:", conditionMessage(e)))
+HOBART <- cbind(147.33, -42.88)
+
+## One forward-transform closure per package. The probe is "transform Hobart and get
+## finite numbers", because several packages will happily build a CRS object from an
+## unknown projection and only fail (or return NA) when asked to use it.
+engine_forward <- list(
+  gdalraster = function(lonlat, ps) gdalraster::transform_xy(lonlat, "OGC:CRS84", ps),
+  PROJ       = function(lonlat, ps) PROJ::proj_trans(lonlat, ps, source = "OGC:CRS84"),
+  sf         = function(lonlat, ps) sf::sf_project("OGC:CRS84", ps, lonlat, keep = TRUE),
+  terra      = function(lonlat, ps) terra::crds(terra::project(terra::vect(lonlat, crs = "OGC:CRS84"), ps)),
+  vapour     = function(lonlat, ps) vapour::vapour_project(lonlat, ps, "OGC:CRS84")
+)
+engine_inverse <- list(
+  gdalraster = function(xy, ps) gdalraster::transform_xy(xy, ps, "OGC:CRS84"),
+  PROJ       = function(xy, ps) PROJ::proj_trans(xy, "OGC:CRS84", source = ps),
+  sf         = function(xy, ps) sf::sf_project(ps, "OGC:CRS84", xy, keep = TRUE),
+  terra      = function(xy, ps) terra::crds(terra::project(terra::vect(xy, crs = ps), "OGC:CRS84")),
+  vapour     = function(xy, ps) vapour::vapour_project(xy, "OGC:CRS84", ps)
+)
+
+probe <- function(pkg, ps = SPILHAUS) {
+  out <- tryCatch({
+    xy <- suppressWarnings(matrix(as.numeric(engine_forward[[pkg]](HOBART, ps)), ncol = 2))
+    if (nrow(xy) != 1 || !all(is.finite(xy))) stop("transform returned NA/Inf") else "ok"
+  }, error = function(e) paste("FAIL:", conditionMessage(e)))
   substr(out, 1, 80)
 }
 has <- function(pkg) requireNamespace(pkg, quietly = TRUE)
+## "installed" is not "loadable": a binary built against another GDAL fails at load time
+load_error <- function(pkg) tryCatch({ loadNamespace(pkg); NULL }, error = function(e) conditionMessage(e))
+row_for_broken <- function(pkg, msg) data.frame(package = pkg, version = as.character(packageVersion(pkg)),
+                                                gdal = "cannot load", proj = "cannot load",
+                                                spilhaus = paste("FAIL:", substr(msg, 1, 60)))
 
 rows <- list()
 
-if (has("gdalraster")) {
+if (has("gdalraster") && !is.null(m <- load_error("gdalraster"))) {
+  rows$gdalraster <- row_for_broken("gdalraster", m)
+} else if (has("gdalraster")) {
   pv <- gdalraster::proj_version()
   rows$gdalraster <- data.frame(
     package = "gdalraster", version = as.character(packageVersion("gdalraster")),
     gdal = gdalraster::gdal_version()[4], proj = pv$name,
-    spilhaus = probe(gdalraster::srs_to_wkt(SPILHAUS)))
+    spilhaus = probe("gdalraster"))
 } else rows$gdalraster <- data.frame(package = "gdalraster", version = NA, gdal = NA, proj = NA, spilhaus = "not installed")
 
-if (has("PROJ")) {
+if (has("PROJ") && !is.null(m <- load_error("PROJ"))) {
+  rows$PROJ <- row_for_broken("PROJ", m)
+} else if (has("PROJ")) {
   rows$PROJ <- data.frame(
     package = "PROJ", version = as.character(packageVersion("PROJ")),
     gdal = "-", proj = PROJ::proj_version(),
-    spilhaus = probe(PROJ::proj_trans(cbind(147.33, -42.88), SPILHAUS, source = "OGC:CRS84")))
+    spilhaus = probe("PROJ"))
 } else rows$PROJ <- data.frame(package = "PROJ", version = NA, gdal = "-", proj = NA, spilhaus = "not installed")
 
-if (has("sf")) {
+if (has("sf") && !is.null(m <- load_error("sf"))) {
+  rows$sf <- row_for_broken("sf", m)
+} else if (has("sf")) {
   v <- sf::sf_extSoftVersion()
   rows$sf <- data.frame(
     package = "sf", version = as.character(packageVersion("sf")),
     gdal = unname(v["GDAL"]), proj = unname(v["PROJ"]),
-    spilhaus = probe({ x <- sf::st_crs(SPILHAUS); if (is.na(x)) stop("st_crs returned NA") }))
+    spilhaus = probe("sf"))
 } else rows$sf <- data.frame(package = "sf", version = NA, gdal = NA, proj = NA, spilhaus = "not installed")
 
-if (has("terra")) {
+if (has("terra") && !is.null(m <- load_error("terra"))) {
+  rows$terra <- row_for_broken("terra", m)
+} else if (has("terra")) {
   rows$terra <- data.frame(
     package = "terra", version = as.character(packageVersion("terra")),
     gdal = terra::gdal(lib = "gdal"), proj = terra::gdal(lib = "proj"),
-    spilhaus = probe({ x <- terra::crs(SPILHAUS); if (!nzchar(x)) stop("empty crs") }))
+    spilhaus = probe("terra"))
 } else rows$terra <- data.frame(package = "terra", version = NA, gdal = NA, proj = NA, spilhaus = "not installed")
 
-if (has("vapour")) {
+if (has("vapour") && !is.null(m <- load_error("vapour"))) {
+  rows$vapour <- row_for_broken("vapour", m)
+} else if (has("vapour")) {
   rows$vapour <- data.frame(
     package = "vapour", version = as.character(packageVersion("vapour")),
     gdal = vapour::vapour_gdal_version(), proj = vapour::vapour_proj_version(),
-    spilhaus = probe(vapour::vapour_srs_wkt(SPILHAUS)))
+    spilhaus = probe("vapour"))
 }
 
 if (has("wk")) rows$wk <- data.frame(package = "wk", version = as.character(packageVersion("wk")),
@@ -125,33 +163,25 @@ cli_version <- function(cmd, args = "--version") {
 }
 cli <- c(gdalinfo = cli_version("gdalinfo"),
          gdal = cli_version("gdal"),
-         projinfo = cli_version("projinfo"))
+         proj = cli_version("proj", character()))  # bare `proj` prints "Rel. x.y.z" to stderr
 knitr::kable(data.frame(tool = names(cli), version = unname(cli)), caption = "Command-line tools on PATH")
 ```
 
 ```{r engine}
-capable <- provenance$package[provenance$spilhaus == "ok" & provenance$package %in% c("gdalraster", "PROJ", "sf", "terra", "vapour")]
-if (length(capable) == 0) stop("No installed package can create +proj=spilhaus on this machine; nothing below can run.")
+capable <- provenance$package[provenance$spilhaus == "ok" & provenance$package %in% names(engine_forward)]
+RASTER_OK <- has("gdalraster") && is.null(load_error("gdalraster"))
+if (length(capable) == 0) {
+  cat("No installed package can transform to +proj=spilhaus on this machine.",
+      "The table above is the whole result; the document stops here.\n")
+  knitr::knit_exit()
+}
 ENGINE <- capable[1]
 cat("Coordinate transforms below use:", ENGINE, "\n")
+if (!RASTER_OK) cat("gdalraster is not loadable here, so the raster sections will be skipped.\n")
 
 ## forward/inverse constructors for any proj string, from the first capable package
-make_forward <- function(proj_string) {
-  switch(ENGINE,
-    gdalraster = function(lonlat) gdalraster::transform_xy(lonlat, "OGC:CRS84", proj_string),
-    PROJ       = function(lonlat) PROJ::proj_trans(lonlat, proj_string, source = "OGC:CRS84"),
-    sf         = function(lonlat) sf::sf_project("OGC:CRS84", proj_string, lonlat, keep = TRUE),
-    terra      = function(lonlat) terra::crds(terra::project(terra::vect(lonlat, crs = "OGC:CRS84"), proj_string)),
-    vapour     = function(lonlat) vapour::vapour_project(lonlat, proj_string, "OGC:CRS84"))
-}
-make_inverse <- function(proj_string) {
-  switch(ENGINE,
-    gdalraster = function(xy) gdalraster::transform_xy(xy, proj_string, "OGC:CRS84"),
-    PROJ       = function(xy) PROJ::proj_trans(xy, "OGC:CRS84", source = proj_string),
-    sf         = function(xy) sf::sf_project(proj_string, "OGC:CRS84", xy, keep = TRUE),
-    terra      = function(xy) terra::crds(terra::project(terra::vect(xy, crs = proj_string), "OGC:CRS84")),
-    vapour     = function(xy) vapour::vapour_project(xy, "OGC:CRS84", proj_string))
-}
+make_forward <- function(proj_string) function(lonlat) engine_forward[[ENGINE]](lonlat, proj_string)
+make_inverse <- function(proj_string) function(xy) engine_inverse[[ENGINE]](xy, proj_string)
 
 ## wrap: NaN where undefined, never error
 safe <- function(f) function(m) {
@@ -210,6 +240,7 @@ estimated. The result is written to `/vsimem/` and read back as a matrix for
 wire.
 
 ```{r warp}
+#| eval: !expr RASTER_OK
 warp_square <- function(proj_string, half, npix, url = RASTER_URL, out = "/vsimem/spilhaus.tif") {
   t0 <- Sys.time()
   gdalraster::warp(url, out, t_srs = proj_string,
@@ -230,6 +261,7 @@ cat(sprintf("Warped %s to a %d x %d Spilhaus grid (%.1f km/px) in %s s\n",
 ```
 
 ```{r render-raster}
+#| eval: !expr exists("w")
 bathy_cols <- grDevices::colorRampPalette(c("#08143f", "#123c7a", "#2a6fb5", "#6aa9d8", "#b9d9ea", "#e3f1f6"))(64)
 render_raster <- function(z, half, add = FALSE) {
   ocean <- z; ocean[!is.na(z) & z >= 0] <- NA
@@ -256,6 +288,7 @@ representation (both ends on the antimeridian or at a pole). Coastlines are
 drawn as segments, not filled polygons.
 
 ```{r vector}
+#| eval: !expr RASTER_OK
 lyr <- new(gdalraster::GDALVector, OCEAN_URL)
 lyr$returnGeomAs <- "WKB"
 feat <- lyr$fetch(-1)
@@ -308,6 +341,7 @@ knitr::kable(data.frame(name = rownames(landmarks), lon = landmarks[, 1], lat = 
 ## 6. Composite
 
 ```{r composite, fig.width=11, fig.height=11}
+#| eval: !expr exists("w") && exists("segs")
 composite <- function(z, half, segs, lm_xy, main) {
   op <- par(mar = c(0, 0, 3, 0), bg = "white")
   render_raster(z, half)
@@ -331,7 +365,13 @@ the only authority code you will find and it is a different, sqrt(2)-larger
 square, which PROJ expresses as `+k_0=1.41421356237`. There is no EPSG code.
 
 ```{r wkt}
-to_wkt <- function(x) tryCatch(gdalraster::srs_to_wkt(x, pretty = TRUE), error = function(e) paste("(", conditionMessage(e), ")"))
+to_wkt <- function(x) {
+  f <- if (RASTER_OK) function(x) gdalraster::srs_to_wkt(x, pretty = TRUE)
+       else if (has("sf")) function(x) sf::st_as_text(sf::st_crs(x), pretty = TRUE)
+       else if (has("terra")) function(x) terra::crs(x)
+       else function(x) stop("no package here can render WKT")
+  tryCatch(f(x), error = function(e) paste("(", conditionMessage(e), ")"))
+}
 hobart <- function(x) tryCatch({ p <- safe(make_forward(x))(cbind(147.33, -42.88)); sprintf("%s, %s", format(round(p[1]), big.mark = ","), format(round(p[2]), big.mark = ",")) }, error = function(e) "transform failed")
 renderings <- data.frame(
   rendering = c("bare proj-string", "explicit proj-string", "ESRI:54099", "alternative centre (section 8)"),
@@ -350,11 +390,14 @@ for (i in seq_len(nrow(renderings))) {
 
 ## 8. Another member of the family
 
+(Skipped when the raster section was.)
+
 Same method, different parameters: a naive recentring on the Atlantic. The
 square's edges now slice the Pacific. Spilhaus's contribution was the
 parameter choice, not the projection.
 
 ```{r alt, fig.width=8, fig.height=8}
+#| eval: !expr exists("w") && exists("geom")
 forward_alt <- safe(make_forward(SPILHAUS_ALT))
 HALF_ALT <- square_half(forward_alt)
 w_alt <- warp_square(SPILHAUS_ALT, HALF_ALT, max(400L, NPIX %/% 2L), out = "/vsimem/spilhaus_alt.tif")

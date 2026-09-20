@@ -61,8 +61,8 @@ capable library it finds (pyproj, then rasterio) and says which one it used.
 to draw a matrix; sf and terra appear in the provenance table and in a one-line
 appendix. R's version of the problem is different from Python's: on Linux the
 packages share one system `libproj`, so the question is what the system has,
-and the Action renders the document on two Ubuntu runners (stock apt, and the
-ubuntugis-unstable PPA) to show the difference. On macOS and Windows the CRAN
+and the Action renders the document on three Ubuntu runners (stock apt, the
+ubuntugis-unstable PPA, and conda-forge) to show the difference. On macOS and Windows the CRAN
 binaries carry their own PROJ instead.
 
 Render locally with `quarto render spilhaus.qmd`; the same `SPILHAUS_*`
@@ -84,7 +84,7 @@ schedule, and publishes to GitHub Pages:
 - `/python/` - static HTML export of `spilhaus.py` with outputs baked in (runs the
   real warp against GEBCO in the Action);
 - `/wasm/` - the Pyodide export of `spilhaus_wasm.py`;
-- `/r/apt/` and `/r/ubuntugis/` - `spilhaus.qmd` rendered against each system GDAL/PROJ.
+- `/r/apt/`, `/r/ubuntugis/` and `/r/conda-forge/` - `spilhaus.qmd` rendered against each GDAL/PROJ source.
 
 The weekly rebuild is deliberate: it re-resolves the dependencies, so the
 provenance table tracks upstream releases without anyone touching the repo.
