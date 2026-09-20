@@ -1,0 +1,394 @@
+---
+title: "Spilhaus, as it flows downstream from PROJ: the R view"
+format:
+  html:
+    toc: true
+    code-fold: false
+    embed-resources: true
+execute:
+  error: true
+  warning: false
+  message: false
+---
+
+The companion to [the Python notebook](../index.html). Same sources, same
+sections, same landmarks, different runtime. The point is the same too:
+`+proj=spilhaus` arrived in **PROJ 9.6.0** (March 2025), and whether *this*
+R session can use it depends on which PROJ each package was linked against.
+
+R's version of the problem is not the Python one. On Linux, sf, terra,
+gdalraster and vapour all link one system `libproj`, so they normally agree;
+the question is what the *system* has, and on a stock Ubuntu that is often
+too old. On macOS and Windows, CRAN's binaries bundle their own GDAL and
+PROJ, chosen by CRAN's build recipes rather than by package authors. So the
+row that changes between machines is the operating system, not the wheel.
+
+The stack here is deliberately low-level: **gdalraster** for I/O and the warp,
+**wk** for vertex-level geometry, **ximage** to draw a matrix. sf and terra
+appear only in the provenance table and in an appendix, as the same operation
+in one line, so you can see which PROJ each one silently used.
+
+```{r setup}
+SPILHAUS <- "+proj=spilhaus"
+SPILHAUS_EXPLICIT <- paste(
+  "+proj=spilhaus +lon_0=66.94970198 +lat_0=-49.56371678",
+  "+azi=40.17823482 +rot=45 +k_0=1 +x_0=0 +y_0=0 +R=6378137"
+)
+SPILHAUS_ALT <- "+proj=spilhaus +lon_0=-30 +lat_0=-20 +azi=20 +rot=45"
+
+GEBCO_URL <- "/vsicurl/https://data.source.coop/alexgleith/gebco-2024/GEBCO_2024.tif"
+RASTER_URL <- Sys.getenv("SPILHAUS_RASTER", GEBCO_URL)
+
+NE_OCEAN_URL <- paste0(
+  "/vsicurl/https://raw.githubusercontent.com/nvkelso/natural-earth-vector/",
+  "master/110m_physical/ne_110m_ocean.shp"
+)
+OCEAN_URL <- Sys.getenv("SPILHAUS_OCEAN", NE_OCEAN_URL)
+
+NPIX <- as.integer(Sys.getenv("SPILHAUS_NPIX", "1600"))
+
+Sys.setenv(GDAL_DISABLE_READDIR_ON_OPEN = "EMPTY_DIR",
+           GDAL_HTTP_MULTIRANGE = "YES",
+           GDAL_HTTP_MERGE_CONSECUTIVE_RANGES = "YES")
+```
+
+## 1. Who has which PROJ?
+
+One row per package. `spilhaus` is the result of asking that package to make
+a CRS from `+proj=spilhaus`.
+
+```{r provenance}
+probe <- function(expr) {
+  out <- tryCatch({ force(expr); "ok" }, error = function(e) paste("FAIL:", conditionMessage(e)))
+  substr(out, 1, 80)
+}
+has <- function(pkg) requireNamespace(pkg, quietly = TRUE)
+
+rows <- list()
+
+if (has("gdalraster")) {
+  pv <- gdalraster::proj_version()
+  rows$gdalraster <- data.frame(
+    package = "gdalraster", version = as.character(packageVersion("gdalraster")),
+    gdal = gdalraster::gdal_version()[4], proj = pv$name,
+    spilhaus = probe(gdalraster::srs_to_wkt(SPILHAUS)))
+} else rows$gdalraster <- data.frame(package = "gdalraster", version = NA, gdal = NA, proj = NA, spilhaus = "not installed")
+
+if (has("PROJ")) {
+  rows$PROJ <- data.frame(
+    package = "PROJ", version = as.character(packageVersion("PROJ")),
+    gdal = "-", proj = PROJ::proj_version(),
+    spilhaus = probe(PROJ::proj_trans(cbind(147.33, -42.88), SPILHAUS, source = "OGC:CRS84")))
+} else rows$PROJ <- data.frame(package = "PROJ", version = NA, gdal = "-", proj = NA, spilhaus = "not installed")
+
+if (has("sf")) {
+  v <- sf::sf_extSoftVersion()
+  rows$sf <- data.frame(
+    package = "sf", version = as.character(packageVersion("sf")),
+    gdal = unname(v["GDAL"]), proj = unname(v["PROJ"]),
+    spilhaus = probe({ x <- sf::st_crs(SPILHAUS); if (is.na(x)) stop("st_crs returned NA") }))
+} else rows$sf <- data.frame(package = "sf", version = NA, gdal = NA, proj = NA, spilhaus = "not installed")
+
+if (has("terra")) {
+  rows$terra <- data.frame(
+    package = "terra", version = as.character(packageVersion("terra")),
+    gdal = terra::gdal(lib = "gdal"), proj = terra::gdal(lib = "proj"),
+    spilhaus = probe({ x <- terra::crs(SPILHAUS); if (!nzchar(x)) stop("empty crs") }))
+} else rows$terra <- data.frame(package = "terra", version = NA, gdal = NA, proj = NA, spilhaus = "not installed")
+
+if (has("vapour")) {
+  rows$vapour <- data.frame(
+    package = "vapour", version = as.character(packageVersion("vapour")),
+    gdal = vapour::vapour_gdal_version(), proj = vapour::vapour_proj_version(),
+    spilhaus = probe(vapour::vapour_srs_wkt(SPILHAUS)))
+}
+
+if (has("wk")) rows$wk <- data.frame(package = "wk", version = as.character(packageVersion("wk")),
+                                     gdal = "-", proj = "- (no PROJ dependency)", spilhaus = "n/a")
+if (has("ximage")) rows$ximage <- data.frame(package = "ximage", version = as.character(packageVersion("ximage")),
+                                             gdal = "-", proj = "-", spilhaus = "n/a")
+
+provenance <- do.call(rbind, rows); rownames(provenance) <- NULL
+knitr::kable(provenance, caption = sprintf("R %s on %s", getRversion(), R.version$platform))
+```
+
+```{r cli}
+cli_version <- function(cmd, args = "--version") {
+  exe <- Sys.which(cmd)
+  if (!nzchar(exe)) return("not found")
+  out <- tryCatch(system2(exe, args, stdout = TRUE, stderr = TRUE), error = function(e) conditionMessage(e))
+  out[1]
+}
+cli <- c(gdalinfo = cli_version("gdalinfo"),
+         gdal = cli_version("gdal"),
+         projinfo = cli_version("projinfo"))
+knitr::kable(data.frame(tool = names(cli), version = unname(cli)), caption = "Command-line tools on PATH")
+```
+
+```{r engine}
+capable <- provenance$package[provenance$spilhaus == "ok" & provenance$package %in% c("gdalraster", "PROJ", "sf", "terra", "vapour")]
+if (length(capable) == 0) stop("No installed package can create +proj=spilhaus on this machine; nothing below can run.")
+ENGINE <- capable[1]
+cat("Coordinate transforms below use:", ENGINE, "\n")
+
+## forward/inverse constructors for any proj string, from the first capable package
+make_forward <- function(proj_string) {
+  switch(ENGINE,
+    gdalraster = function(lonlat) gdalraster::transform_xy(lonlat, "OGC:CRS84", proj_string),
+    PROJ       = function(lonlat) PROJ::proj_trans(lonlat, proj_string, source = "OGC:CRS84"),
+    sf         = function(lonlat) sf::sf_project("OGC:CRS84", proj_string, lonlat, keep = TRUE),
+    terra      = function(lonlat) terra::crds(terra::project(terra::vect(lonlat, crs = "OGC:CRS84"), proj_string)),
+    vapour     = function(lonlat) vapour::vapour_project(lonlat, proj_string, "OGC:CRS84"))
+}
+make_inverse <- function(proj_string) {
+  switch(ENGINE,
+    gdalraster = function(xy) gdalraster::transform_xy(xy, proj_string, "OGC:CRS84"),
+    PROJ       = function(xy) PROJ::proj_trans(xy, "OGC:CRS84", source = proj_string),
+    sf         = function(xy) sf::sf_project(proj_string, "OGC:CRS84", xy, keep = TRUE),
+    terra      = function(xy) terra::crds(terra::project(terra::vect(xy, crs = proj_string), "OGC:CRS84")),
+    vapour     = function(xy) vapour::vapour_project(xy, "OGC:CRS84", proj_string))
+}
+
+## wrap: NaN where undefined, never error
+safe <- function(f) function(m) {
+  m <- matrix(as.numeric(m), ncol = 2)
+  out <- tryCatch(f(m), error = function(e) matrix(NA_real_, nrow(m), 2))
+  out <- matrix(as.numeric(out), ncol = 2)
+  bad <- !is.finite(out[, 1]) | !is.finite(out[, 2]) | abs(out[, 1]) > 1e15 | abs(out[, 2]) > 1e15
+  out[bad, ] <- NA_real_
+  out
+}
+## inverse one point at a time so singular corners fail individually
+pointwise <- function(f) function(m) {
+  m <- matrix(as.numeric(m), ncol = 2)
+  t(apply(m, 1, function(p) f(matrix(p, ncol = 2))))
+}
+forward <- safe(make_forward(SPILHAUS))
+inverse <- pointwise(safe(make_inverse(SPILHAUS)))
+```
+
+## 2. The projection's domain
+
+PROJ does not publish the square's half-width, so forward-project a dense
+lon/lat grid and take the extent; then inverse-project the square's boundary
+to trace the cut on the globe.
+
+```{r domain}
+square_half <- function(fwd, n = 721) {
+  g <- as.matrix(expand.grid(lon = seq(-180, 180, length.out = n), lat = seq(-90, 90, length.out = (n + 1) %/% 2)))
+  xy <- fwd(g)
+  ceiling(max(abs(xy), na.rm = TRUE) / 1000) * 1000
+}
+HALF <- square_half(forward)
+
+n <- 300; t <- seq(-1, 1, length.out = n); edge <- 0.996 * HALF
+boundary <- rbind(cbind(t * edge, -edge), cbind(edge, t * edge), cbind(rev(t) * edge, edge), cbind(-edge, rev(t) * edge))
+cut <- inverse(boundary)
+corners <- rbind(`corner A (Asia)` = c(115, 30), `corner B (South America)` = c(-65, -30))
+
+cat(sprintf("Half-width %s m; %d of %d boundary samples inverted (misses cluster at the singular corners)\n",
+            format(HALF, big.mark = ","), sum(complete.cases(cut)), nrow(cut)))
+
+op <- par(mar = c(3, 3, 2, 1))
+plot(NA, xlim = c(-180, 180), ylim = c(-90, 90), asp = 1, xlab = "", ylab = "",
+     main = sprintf("Where the Spilhaus cut falls on the globe (half-width %.3f Mm)", HALF / 1e6))
+grid(); points(cut, pch = 16, cex = 0.4, col = "#b8342c")
+points(corners, cex = 1.6, lwd = 1.5); text(corners, rownames(corners), pos = 4, cex = 0.8)
+par(op)
+```
+
+## 3. Raster: bathymetry over `/vsicurl`
+
+`gdalraster::warp()` is GDAL's warper with the same option vocabulary as
+`gdalwarp`, so the target extent and size are stated explicitly rather than
+estimated. The result is written to `/vsimem/` and read back as a matrix for
+**ximage**; nothing touches disk and only the tiles GDAL needs come over the
+wire.
+
+```{r warp}
+warp_square <- function(proj_string, half, npix, url = RASTER_URL, out = "/vsimem/spilhaus.tif") {
+  t0 <- Sys.time()
+  gdalraster::warp(url, out, t_srs = proj_string,
+                   cl_arg = c("-te", -half, -half, half, half, "-ts", npix, npix,
+                              "-r", "average", "-dstalpha", "-overwrite", "-q"))
+  ds <- new(gdalraster::GDALRaster, out)
+  on.exit(ds$close())
+  v <- ds$read(band = 1, xoff = 0, yoff = 0, xsize = npix, ysize = npix, out_xsize = npix, out_ysize = npix)
+  a <- ds$read(band = ds$getRasterCount(), xoff = 0, yoff = 0, xsize = npix, ysize = npix, out_xsize = npix, out_ysize = npix)
+  m <- matrix(v, nrow = npix, ncol = npix, byrow = TRUE)   # row 1 = top of the image
+  m[matrix(a, npix, npix, byrow = TRUE) == 0] <- NA
+  list(z = m, res_m = 2 * half / npix, seconds = round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 1),
+       bands = ds$getRasterCount())
+}
+w <- warp_square(SPILHAUS, HALF, NPIX)
+cat(sprintf("Warped %s to a %d x %d Spilhaus grid (%.1f km/px) in %s s\n",
+            basename(RASTER_URL), NPIX, NPIX, w$res_m / 1000, w$seconds))
+```
+
+```{r render-raster}
+bathy_cols <- grDevices::colorRampPalette(c("#08143f", "#123c7a", "#2a6fb5", "#6aa9d8", "#b9d9ea", "#e3f1f6"))(64)
+render_raster <- function(z, half, add = FALSE) {
+  ocean <- z; ocean[!is.na(z) & z >= 0] <- NA
+  land  <- z; land[is.na(z) | z < 0] <- NA
+  ximage::ximage(pmax(ocean, -7000), extent = c(-half, half, -half, half), asp = 1, col = bathy_cols,
+                 zlim = c(-7000, 0), axes = FALSE, xlab = "", ylab = "", add = add)
+  ximage::ximage(matrix(as.numeric(!is.na(land)), nrow(land)), extent = c(-half, half, -half, half),
+                 zlim = c(0, 1), col = c(NA, "#d9d2c5"), add = TRUE)
+}
+op <- par(mar = c(0, 0, 2, 0), bg = "#d9d2c5")
+render_raster(w$z, HALF)
+title("Raster only (bathymetry), warped by GDAL via gdalraster", cex.main = 0.9)
+par(op)
+```
+
+## 4. Vector: Natural Earth ocean polygons, as vertices
+
+Read remotely with gdalraster's `GDALVector`, geometry returned as WKB, and
+handed to **wk**. From there the polygons are just a coordinate table with
+ring ids: transform the vertices, form segments between consecutive vertices
+of the same ring, and drop the segments that are absurdly long in projected
+space (those straddle the cut) or that are artefacts of the lon/lat
+representation (both ends on the antimeridian or at a pole). Coastlines are
+drawn as segments, not filled polygons.
+
+```{r vector}
+lyr <- new(gdalraster::GDALVector, OCEAN_URL)
+lyr$returnGeomAs <- "WKB"
+feat <- lyr$fetch(-1)
+lyr$close()
+geom_col <- which(vapply(feat, is.list, logical(1)))[1]  # the WKB column, whatever it is called
+geom <- wk::wkb(feat[[geom_col]])
+cat(sprintf("Ocean layer: %d feature(s), %s\n", length(geom), wk::wk_crs(geom)))
+
+coast_segments <- function(geom, fwd, half, densify_deg = 0.5) {
+  ## densify in lon/lat so the projected curves are smooth near the corners
+  ## (wk has no densify; do it on the coordinate table)
+  co <- wk::wk_coords(geom)
+  key <- paste(co$feature_id, co$part_id, co$ring_id)
+  dens <- do.call(rbind, lapply(split(co, key), function(r) {
+    if (nrow(r) < 2) return(NULL)
+    steps <- pmax(1L, ceiling(sqrt(diff(r$x)^2 + diff(r$y)^2) / densify_deg))
+    x <- unlist(mapply(function(a, b, k) seq(a, b, length.out = k + 1)[-(k + 1)], r$x[-nrow(r)], r$x[-1], steps))
+    y <- unlist(mapply(function(a, b, k) seq(a, b, length.out = k + 1)[-(k + 1)], r$y[-nrow(r)], r$y[-1], steps))
+    data.frame(ring = r$ring_id[1] + 1e6 * r$feature_id[1], x = c(x, r$x[nrow(r)]), y = c(y, r$y[nrow(r)]))
+  }))
+  xy <- fwd(cbind(dens$x, dens$y))
+  same_ring <- dens$ring[-1] == dens$ring[-nrow(dens)]
+  step <- sqrt(diff(xy[, 1])^2 + diff(xy[, 2])^2)
+  synthetic <- (abs(dens$x[-1]) > 179.99 & abs(dens$x[-nrow(dens)]) > 179.99) |
+               (abs(dens$y[-1]) > 89.99 & abs(dens$y[-nrow(dens)]) > 89.99)
+  ok <- same_ring & is.finite(step) & step < half / 8 & !synthetic
+  i <- which(ok)
+  cbind(x0 = xy[i, 1], y0 = xy[i, 2], x1 = xy[i + 1, 1], y1 = xy[i + 1, 2])
+}
+segs <- coast_segments(geom, forward, HALF)
+cat(sprintf("%d coastline segments after projecting with %s and dropping cut-crossing segments\n", nrow(segs), ENGINE))
+```
+
+## 5. Points: landmarks, transformed directly
+
+```{r points}
+landmarks <- rbind(
+  Hobart = c(147.33, -42.88), Tokyo = c(139.69, 35.69), Reykjavik = c(-21.94, 64.15),
+  `Cape of Good Hope` = c(18.47, -34.36), `Bering Strait` = c(-169.0, 65.8),
+  `Drake Passage` = c(-63.0, -59.0), `Point Nemo` = c(-123.39, -48.88),
+  `Challenger Deep` = c(142.20, 11.37), `Puerto Rico Trench` = c(-66.5, 19.7),
+  `Mid-Atlantic Ridge (Azores)` = c(-27.0, 38.0), `Macquarie Island` = c(158.94, -54.62),
+  `Mawson Station` = c(62.87, -67.60), `Casey Station` = c(110.53, -66.28))
+lm_xy <- forward(landmarks)
+knitr::kable(data.frame(name = rownames(landmarks), lon = landmarks[, 1], lat = landmarks[, 2],
+                        x = round(lm_xy[, 1]), y = round(lm_xy[, 2]), row.names = NULL),
+             caption = "Landmarks in Spilhaus metres")
+```
+
+## 6. Composite
+
+```{r composite, fig.width=11, fig.height=11}
+composite <- function(z, half, segs, lm_xy, main) {
+  op <- par(mar = c(0, 0, 3, 0), bg = "white")
+  render_raster(z, half)
+  segments(segs[, 1], segs[, 2], segs[, 3], segs[, 4], col = "#3a3a3a", lwd = 0.6)
+  points(lm_xy, pch = 21, bg = "#f2b134", col = "black", cex = 1.1)
+  text(lm_xy, rownames(landmarks), pos = 4, cex = 0.75, offset = 0.4)
+  title(main, cex.main = 1)
+  par(op)
+}
+proj_used <- provenance$proj[provenance$package == ENGINE]
+composite(w$z, HALF, segs, lm_xy,
+          sprintf("The world ocean in Spilhaus projection\nraster warped by GDAL (gdalraster); coastlines and points transformed by %s (PROJ %s)", ENGINE, proj_used))
+```
+
+## 7. Naming the thing: proj-string, WKT, and the missing authority code
+
+Three renderings of "the same" projection. The bare proj-string exports to
+WKT with the method named and *no parameters*: the numbers live in PROJ's
+source. Spell the parameters out and the WKT carries them. **ESRI:54099** is
+the only authority code you will find and it is a different, sqrt(2)-larger
+square, which PROJ expresses as `+k_0=1.41421356237`. There is no EPSG code.
+
+```{r wkt}
+to_wkt <- function(x) tryCatch(gdalraster::srs_to_wkt(x, pretty = TRUE), error = function(e) paste("(", conditionMessage(e), ")"))
+hobart <- function(x) tryCatch({ p <- safe(make_forward(x))(cbind(147.33, -42.88)); sprintf("%s, %s", format(round(p[1]), big.mark = ","), format(round(p[2]), big.mark = ",")) }, error = function(e) "transform failed")
+renderings <- data.frame(
+  rendering = c("bare proj-string", "explicit proj-string", "ESRI:54099", "alternative centre (section 8)"),
+  input = c(SPILHAUS, SPILHAUS_EXPLICIT, "ESRI:54099", SPILHAUS_ALT))
+renderings$hobart_xy <- vapply(renderings$input, hobart, "")
+knitr::kable(renderings, caption = "Same projection, several names. hobart_xy is Hobart's projected coordinate under each.", row.names = FALSE)
+```
+
+```{r wkt-dump}
+#| results: asis
+fence <- strrep("`", 3)
+for (i in seq_len(nrow(renderings))) {
+  cat("\n#### WKT2 for", renderings$rendering[i], "\n\n", fence, "\n", to_wkt(renderings$input[i]), "\n", fence, "\n", sep = "")
+}
+```
+
+## 8. Another member of the family
+
+Same method, different parameters: a naive recentring on the Atlantic. The
+square's edges now slice the Pacific. Spilhaus's contribution was the
+parameter choice, not the projection.
+
+```{r alt, fig.width=8, fig.height=8}
+forward_alt <- safe(make_forward(SPILHAUS_ALT))
+HALF_ALT <- square_half(forward_alt)
+w_alt <- warp_square(SPILHAUS_ALT, HALF_ALT, max(400L, NPIX %/% 2L), out = "/vsimem/spilhaus_alt.tif")
+segs_alt <- coast_segments(geom, forward_alt, HALF_ALT)
+composite(w_alt$z, HALF_ALT, segs_alt, forward_alt(landmarks),
+          sprintf("%s\n(half-width %.3f Mm vs %.3f Mm for the default)", SPILHAUS_ALT, HALF_ALT / 1e6, HALF / 1e6))
+```
+
+## Appendix: the same thing in one line each
+
+Convenience layers hide which PROJ did the work. Each of these either
+works or does not, purely according to the table in section 1.
+
+```{r appendix-sf}
+if (requireNamespace("sf", quietly = TRUE)) {
+  x <- sf::st_transform(sf::st_sfc(sf::st_point(c(147.33, -42.88)), crs = "OGC:CRS84"), SPILHAUS)
+  print(sf::st_coordinates(x)); cat("sf used PROJ", sf::sf_extSoftVersion()[["PROJ"]], "\n")
+}
+```
+
+```{r appendix-terra}
+if (requireNamespace("terra", quietly = TRUE)) {
+  x <- terra::project(terra::vect(cbind(147.33, -42.88), crs = "OGC:CRS84"), SPILHAUS)
+  print(terra::crds(x)); cat("terra used PROJ", terra::gdal(lib = "proj"), "\n")
+}
+```
+
+## What to take from this
+
+- On Linux the R packages usually agree with each other because they share
+  one `libproj`; the question is whether the *system* PROJ is 9.6 or later.
+  A stock Ubuntu LTS says no. The matrix in this repo's Actions shows what
+  each runner image actually has.
+- On macOS and Windows the CRAN binaries carry their own PROJ, and those
+  versions move on CRAN's schedule.
+- The primitives route (gdalraster for GDAL, wk for vertices, ximage for
+  pixels) makes the dependency visible: every transform in this document is
+  a call you can see, made by a package you can name.
+- A proj-string is a recipe with hidden defaults. Cite the WKT with the
+  parameters in it, and do not assume the one authority code you can find
+  describes the map you meant.

@@ -90,6 +90,17 @@ def _():
 
     SPILHAUS = "+proj=spilhaus"
 
+    # The same map with every parameter spelled out (values from the PROJ docs).
+    # Bare "+proj=spilhaus" relies on defaults that live in PROJ's source code.
+    SPILHAUS_EXPLICIT = (
+        "+proj=spilhaus +lon_0=66.94970198 +lat_0=-49.56371678 "
+        "+azi=40.17823482 +rot=45 +k_0=1 +x_0=0 +y_0=0 +R=6378137"
+    )
+
+    # A different member of the same family: naive recentring on the Atlantic.
+    # Same projection method, different parameters, and the cut now runs through ocean.
+    SPILHAUS_ALT = "+proj=spilhaus +lon_0=-30 +lat_0=-20 +azi=20 +rot=45"
+
     GEBCO_URL = "/vsicurl/https://data.source.coop/alexgleith/gebco-2024/GEBCO_2024.tif"
     RASTER_URL = os.environ.get("SPILHAUS_RASTER", GEBCO_URL)
 
@@ -100,7 +111,7 @@ def _():
     OCEAN_URL = os.environ.get("SPILHAUS_OCEAN", NE_OCEAN_URL)
 
     NPIX = int(os.environ.get("SPILHAUS_NPIX", "1600"))
-    return NPIX, OCEAN_URL, RASTER_URL, SPILHAUS, np, os, shutil, subprocess, sys
+    return NPIX, OCEAN_URL, RASTER_URL, SPILHAUS, SPILHAUS_ALT, SPILHAUS_EXPLICIT, np, os, shutil, subprocess, sys
 
 
 @app.cell
@@ -127,21 +138,22 @@ def _(SPILHAUS, mo, shutil, subprocess, sys):
             return None
 
     probes = []  # rows for the table
-    engines = {}  # name -> dict(forward=callable, inverse=callable) for capable libs
+    engines = {}  # name -> factory(proj_string) -> dict(forward=callable, inverse=callable)
 
     # --- pyproj -------------------------------------------------------------
     try:
         import pyproj
 
         _row = dict(package="pyproj", version=pyproj.__version__, gdal="-", proj=pyproj.proj_version_str)
+        def _pyproj_factory(ps, _pp=pyproj):
+            crs = _pp.CRS.from_proj4(ps)
+            fwd = _pp.Transformer.from_crs(4326, crs, always_xy=True)
+            inv = _pp.Transformer.from_crs(crs, 4326, always_xy=True)
+            return dict(forward=fwd.transform, inverse=inv.transform)
+
         try:
-            _crs = pyproj.CRS.from_proj4(SPILHAUS)
-            _fwd = pyproj.Transformer.from_crs(4326, _crs, always_xy=True)
-            _inv = pyproj.Transformer.from_crs(_crs, 4326, always_xy=True)
-            engines["pyproj"] = dict(
-                forward=lambda x, y, t=_fwd: t.transform(x, y),
-                inverse=lambda x, y, t=_inv: t.transform(x, y),
-            )
+            _pyproj_factory(SPILHAUS)  # the probe
+            engines["pyproj"] = _pyproj_factory
             _row["spilhaus"] = "ok"
         except Exception as e:  # noqa: BLE001
             _row["spilhaus"] = f"FAIL: {type(e).__name__}"
@@ -157,13 +169,17 @@ def _(SPILHAUS, mo, shutil, subprocess, sys):
 
         _proj = getattr(rasterio, "__proj_version__", None) or "?"
         _row = dict(package="rasterio", version=rasterio.__version__, gdal=rasterio.__gdal_version__, proj=str(_proj))
-        try:
-            _rcrs = rasterio.crs.CRS.from_proj4(SPILHAUS)
-            _r4326 = rasterio.crs.CRS.from_epsg(4326)
-            engines["rasterio"] = dict(
-                forward=lambda x, y, f=_rio_transform, a=_r4326, b=_rcrs: f(a, b, list(x), list(y)),
-                inverse=lambda x, y, f=_rio_transform, a=_rcrs, b=_r4326: f(a, b, list(x), list(y)),
+        def _rasterio_factory(ps, _rio=rasterio, _t=_rio_transform):
+            crs = _rio.crs.CRS.from_proj4(ps)
+            wgs = _rio.crs.CRS.from_epsg(4326)
+            return dict(
+                forward=lambda x, y: _t(wgs, crs, list(x), list(y)),
+                inverse=lambda x, y: _t(crs, wgs, list(x), list(y)),
             )
+
+        try:
+            _rasterio_factory(SPILHAUS)  # the probe
+            engines["rasterio"] = _rasterio_factory
             _row["spilhaus"] = "ok"
         except Exception as e:  # noqa: BLE001
             _row["spilhaus"] = f"FAIL: {type(e).__name__}"
@@ -266,45 +282,55 @@ def _(SPILHAUS, mo, shutil, subprocess, sys):
 
 
 @app.cell
-def _(capable, engines, np):
-    # A single forward/inverse pair, from whichever library was capable.
+def _(SPILHAUS, capable, engines, np):
+    # Forward/inverse constructors for any proj string, from whichever library was capable.
     if not capable:
         raise RuntimeError("No installed library can create +proj=spilhaus; nothing below can run.")
 
     ENGINE = capable[0]
-    _fwd = engines[ENGINE]["forward"]
-    _inv = engines[ENGINE]["inverse"]
 
-    def forward(lon, lat):
-        """lon/lat arrays -> Spilhaus x/y arrays (NaN where undefined)."""
-        lon = np.asarray(lon, dtype=float).ravel()
-        lat = np.asarray(lat, dtype=float).ravel()
-        x, y = _fwd(lon.tolist(), lat.tolist())
-        x = np.asarray(x, dtype=float)
-        y = np.asarray(y, dtype=float)
-        bad = ~np.isfinite(x) | ~np.isfinite(y) | (np.abs(x) > 1e15) | (np.abs(y) > 1e15)
-        x[bad] = np.nan
-        y[bad] = np.nan
-        return x, y
+    def make_forward(proj_string):
+        _fwd = engines[ENGINE](proj_string)["forward"]
 
-    def inverse(x, y):
-        """Spilhaus x/y -> lon/lat, one point at a time so singular corners fail individually."""
-        x = np.asarray(x, dtype=float).ravel()
-        y = np.asarray(y, dtype=float).ravel()
-        lon = np.full_like(x, np.nan)
-        lat = np.full_like(y, np.nan)
-        for i in range(len(x)):
-            try:
-                a, b = _inv([x[i]], [y[i]])
-                lon[i], lat[i] = float(a[0]), float(b[0])
-            except Exception:  # noqa: BLE001
-                pass
-        bad = ~np.isfinite(lon) | (np.abs(lon) > 360) | (np.abs(lat) > 90)
-        lon[bad] = np.nan
-        lat[bad] = np.nan
-        return lon, lat
+        def forward(lon, lat):
+            """lon/lat arrays -> projected x/y arrays (NaN where undefined)."""
+            lon = np.asarray(lon, dtype=float).ravel()
+            lat = np.asarray(lat, dtype=float).ravel()
+            x, y = _fwd(lon.tolist(), lat.tolist())
+            x = np.asarray(x, dtype=float)
+            y = np.asarray(y, dtype=float)
+            bad = ~np.isfinite(x) | ~np.isfinite(y) | (np.abs(x) > 1e15) | (np.abs(y) > 1e15)
+            x[bad] = np.nan
+            y[bad] = np.nan
+            return x, y
 
-    return ENGINE, forward, inverse
+        return forward
+
+    def make_inverse(proj_string):
+        _inv = engines[ENGINE](proj_string)["inverse"]
+
+        def inverse(x, y):
+            """projected x/y -> lon/lat, one point at a time so singular corners fail individually."""
+            x = np.asarray(x, dtype=float).ravel()
+            y = np.asarray(y, dtype=float).ravel()
+            lon = np.full_like(x, np.nan)
+            lat = np.full_like(y, np.nan)
+            for i in range(len(x)):
+                try:
+                    a, b = _inv([x[i]], [y[i]])
+                    lon[i], lat[i] = float(a[0]), float(b[0])
+                except Exception:  # noqa: BLE001
+                    pass
+            bad = ~np.isfinite(lon) | (np.abs(lon) > 360) | (np.abs(lat) > 90)
+            lon[bad] = np.nan
+            lat[bad] = np.nan
+            return lon, lat
+
+        return inverse
+
+    forward = make_forward(SPILHAUS)
+    inverse = make_inverse(SPILHAUS)
+    return ENGINE, forward, inverse, make_forward, make_inverse
 
 
 @app.cell
@@ -326,11 +352,15 @@ def _(ENGINE, mo):
 
 @app.cell
 def _(forward, inverse, np):
-    _lon, _lat = np.meshgrid(np.linspace(-180, 180, 1441), np.linspace(-90, 90, 721))
-    _x, _y = forward(_lon, _lat)
-    HALF = float(np.nanmax(np.abs(np.concatenate([_x, _y]))))
-    # tidy: the true half-width is slightly larger than any sampled point
-    HALF = np.ceil(HALF / 1000.0) * 1000.0
+    def square_half(fwd, n=1441):
+        """Half-width of the projected square: forward-project a dense grid and take the extent."""
+        lon, lat = np.meshgrid(np.linspace(-180, 180, n), np.linspace(-90, 90, (n + 1) // 2))
+        x, y = fwd(lon, lat)
+        half = float(np.nanmax(np.abs(np.concatenate([x, y]))))
+        # the true half-width is slightly larger than any sampled point
+        return float(np.ceil(half / 1000.0) * 1000.0)
+
+    HALF = square_half(forward)
 
     # Trace the cut: inverse-project the square boundary just inside the edge.
     _n = 300
@@ -348,7 +378,7 @@ def _(forward, inverse, np):
 
     # the two singular corner points, from the literature: (115E, 30N) and (65W, 30S)
     corners = {"corner A (Asia)": (115.0, 30.0), "corner B (South America)": (-65.0, -30.0)}
-    return HALF, corners, cut_lat, cut_lon
+    return HALF, corners, cut_lat, cut_lon, square_half
 
 
 @app.cell
@@ -410,11 +440,7 @@ def _(HALF, NPIX, RASTER_URL, SPILHAUS, mo, np):
     from rasterio.transform import from_bounds
     from rasterio.vrt import WarpedVRT
 
-    dst_crs = rio.crs.CRS.from_proj4(SPILHAUS)
-    dst_transform = from_bounds(-HALF, -HALF, HALF, HALF, NPIX, NPIX)
-    dst_res_m = 2 * HALF / NPIX
-
-    def _pick_overview(src):
+    def _pick_overview(src, dst_res_m):
         """Index into src.overviews(1) whose resolution is just finer than the target, else None."""
         ovr = src.overviews(1)
         if not ovr:
@@ -425,40 +451,50 @@ def _(HALF, NPIX, RASTER_URL, SPILHAUS, mo, np):
         finer = [k for k, res in levels if res <= dst_res_m / 1.5]
         return max(finer) if finer else None
 
-    _t0 = time.perf_counter()
-    with rio.open(RASTER_URL) as _probe:
-        raster_meta = dict(
-            driver=_probe.driver,
-            size=f"{_probe.width} x {_probe.height}",
-            bands=_probe.count,
-            dtype=_probe.dtypes[0],
-            crs=str(_probe.crs),
-            overviews=_probe.overviews(1),
-            nodata=_probe.nodata,
-        )
-        _ovr = _pick_overview(_probe)
+    def warp_square(proj_string, half, npix, url=RASTER_URL):
+        """Warp the source raster onto the [-half, half]^2 square of proj_string at npix x npix.
 
-    with rio.open(RASTER_URL, overview_level=_ovr) as _src:
-        with WarpedVRT(
-            _src,
-            crs=dst_crs,
-            transform=dst_transform,
-            width=NPIX,
-            height=NPIX,
-            resampling=Resampling.bilinear if _src.count > 1 else Resampling.average,
-            add_alpha=True,
-        ) as _vrt:
-            warped = _vrt.read()
-    raster_seconds = time.perf_counter() - _t0
-    raster_meta["overview_used"] = _ovr
-    raster_meta["seconds"] = round(raster_seconds, 1)
+        Returns (array with alpha band last, metadata dict)."""
+        dst_crs = rio.crs.CRS.from_proj4(proj_string)
+        dst_transform = from_bounds(-half, -half, half, half, npix, npix)
+        res_m = 2 * half / npix
+        t0 = time.perf_counter()
+        with rio.open(url) as probe:
+            meta = dict(
+                driver=probe.driver,
+                size=f"{probe.width} x {probe.height}",
+                bands=probe.count,
+                dtype=probe.dtypes[0],
+                crs=str(probe.crs),
+                overviews=probe.overviews(1),
+                nodata=probe.nodata,
+            )
+            ovr = _pick_overview(probe, res_m)
+        with rio.open(url, overview_level=ovr) as src:
+            with WarpedVRT(
+                src,
+                crs=dst_crs,
+                transform=dst_transform,
+                width=npix,
+                height=npix,
+                resampling=Resampling.bilinear if src.count > 1 else Resampling.average,
+                add_alpha=True,
+            ) as vrt:
+                arr = vrt.read()
+        meta["overview_used"] = ovr
+        meta["seconds"] = round(time.perf_counter() - t0, 1)
+        meta["res_m"] = res_m
+        return arr, meta
+
+    warped, raster_meta = warp_square(SPILHAUS, HALF, NPIX)
+    dst_res_m = raster_meta["res_m"]
 
     mo.md(
         f"Warped `{RASTER_URL.split('/')[-1]}` to a {NPIX} x {NPIX} Spilhaus grid "
-        f"({dst_res_m/1000:.1f} km/px) in **{raster_seconds:.1f} s**, reading overview level "
-        f"`{_ovr}` of {raster_meta['overviews'] or 'none'}."
+        f"({dst_res_m/1000:.1f} km/px) in **{raster_meta['seconds']} s**, reading overview level "
+        f"`{raster_meta['overview_used']}` of {raster_meta['overviews'] or 'none'}."
     )
-    return Resampling, WarpedVRT, dst_crs, dst_res_m, dst_transform, from_bounds, raster_meta, rio, warped
+    return Resampling, WarpedVRT, dst_res_m, from_bounds, raster_meta, rio, warp_square, warped
 
 
 @app.cell
@@ -593,7 +629,7 @@ def _(ENGINE, OCEAN_URL, forward, mo, np):
 
     ocean = gpd.read_file(OCEAN_URL)
 
-    def rings_to_segments(gdf, densify_deg=0.5, max_jump=None):
+    def rings_to_segments(gdf, densify_deg=0.5, max_jump=None, fwd=forward):
         """All polygon rings -> list of (N,2) projected coordinate arrays, split at long jumps."""
         out = []
         for geom in gdf.geometry:
@@ -601,7 +637,7 @@ def _(ENGINE, OCEAN_URL, forward, mo, np):
             for poly in getattr(geom, "geoms", [geom]):
                 for ring in [poly.exterior, *poly.interiors]:
                     c = np.asarray(ring.coords)
-                    x, y = forward(c[:, 0], c[:, 1])
+                    x, y = fwd(c[:, 0], c[:, 1])
                     xy = np.c_[x, y]
                     step = np.hypot(np.diff(x), np.diff(y))
                     # segments that are artefacts of the lon/lat representation, not coastline:
@@ -716,7 +752,133 @@ def _(ENGINE, HALF, coast_segments, dst_res_m, landmark_xy, mo, plt, probes, ras
 def _(mo):
     mo.md(
         r"""
-        ## 8. What to take from this
+        ## 8. Naming the thing: proj-string, WKT, and the missing authority code
+
+        `+proj=spilhaus` is a fine thing to type. It is a poor thing to store, cite,
+        or hand to someone in five years. Three renderings of "the same" projection:
+
+        1. the bare proj-string, exported to WKT2 - the method is named, but every
+           parameter is *implicit*: the numbers live in PROJ's source code;
+        2. the same proj-string with all parameters spelled out - now the WKT carries
+           the numbers, and round-trips;
+        3. **ESRI:54099**, the only authority code you will find. It is a *different* map:
+           ESRI's Adams Square II convention has the square a factor of sqrt(2) larger,
+           which PROJ expresses by mapping it to `+k_0=1.41421356237`.
+
+        There is no EPSG code. Nobody has registered one, and for a projection whose
+        whole point is one specific choice of parameters that is a gap worth noticing.
+        """
+    )
+    return
+
+
+@app.cell
+def _(SPILHAUS, SPILHAUS_ALT, SPILHAUS_EXPLICIT, mo, np, rio):
+    from rasterio.warp import transform as _xf
+
+    def _wkt(crs_in):
+        try:
+            crs = rio.crs.CRS.from_string(crs_in)
+            return crs, crs.to_wkt(version="WKT2_2019", pretty=True)
+        except Exception as e:  # noqa: BLE001
+            return None, f"({type(e).__name__}: {e})"
+
+    _hobart = (147.33, -42.88)
+    renderings = []
+    for _label, _src in [
+        ("bare proj-string", SPILHAUS),
+        ("explicit proj-string", SPILHAUS_EXPLICIT),
+        ("ESRI:54099", "ESRI:54099"),
+        ("alternative centre (section 9)", SPILHAUS_ALT),
+    ]:
+        _crs, _w = _wkt(_src)
+        _xy = "-"
+        _p4 = "-"
+        if _crs is not None:
+            try:
+                _x, _y = _xf("EPSG:4326", _crs, [_hobart[0]], [_hobart[1]])
+                _xy = f"{_x[0]:,.0f}, {_y[0]:,.0f}"
+            except Exception:  # noqa: BLE001
+                _xy = "transform failed"
+            try:
+                _p4 = _crs.to_proj4()
+            except Exception:  # noqa: BLE001
+                _p4 = "(no proj-string export)"
+        renderings.append(dict(rendering=_label, input=_src, proj_string_export=_p4, hobart_xy=_xy, wkt2=_w))
+
+    mo.vstack(
+        [
+            mo.ui.table(
+                [{k: v for k, v in r.items() if k != "wkt2"} for r in renderings],
+                selection=None,
+                label="Same projection, several names. hobart_xy is Hobart's projected coordinate under each.",
+            ),
+            mo.accordion({f"WKT2:2019 for {r['rendering']}": mo.md(f"```\n{r['wkt2']}\n```") for r in renderings}),
+            mo.callout(
+                mo.md(
+                    "Look for `PARAMETER[...]` entries in the first WKT: there are none. The map is fully "
+                    "determined only by defaults in PROJ. The second rendering is what a technical citation "
+                    "should carry. ESRI:54099 places Hobart somewhere else entirely; it is a bigger square."
+                ),
+                kind="info",
+            ),
+        ]
+    )
+    return (renderings,)
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+        ## 9. Another member of the family
+
+        Spilhaus's genius was not the projection method (it is Adams' World in a Square II,
+        1929) but the *parameters*: a centre, an azimuth and a rotation chosen so the cut falls
+        almost entirely on land. Change them and you have a perfectly valid map of the same
+        family that nobody would call the Spilhaus map. Below, a naive recentring on the
+        Atlantic. Same method, same code path, and the square's edges now slice the ocean.
+        """
+    )
+    return
+
+
+@app.cell
+def _(HALF, NPIX, SPILHAUS_ALT, landmarks, make_forward, mo, ocean, plt, render_raster, rings_to_segments, square_half, warp_square):
+    from matplotlib import patheffects as _pe
+    from matplotlib.collections import LineCollection as _LC
+
+    forward_alt = make_forward(SPILHAUS_ALT)
+    HALF_ALT = square_half(forward_alt)
+    _npix = max(400, NPIX // 2)
+    warped_alt, meta_alt = warp_square(SPILHAUS_ALT, HALF_ALT, _npix)
+    coast_alt = rings_to_segments(ocean, densify_deg=0.5, max_jump=HALF_ALT / 8, fwd=forward_alt)
+    _lx, _ly = forward_alt([v[0] for v in landmarks.values()], [v[1] for v in landmarks.values()])
+
+    _fig, _ax = plt.subplots(figsize=(8, 8))
+    _ax.set_facecolor("#d9d2c5")
+    render_raster(_ax, warped_alt, HALF_ALT, meta_alt["res_m"])
+    _ax.add_collection(_LC(coast_alt, colors="#3a3a3a", linewidths=0.45))
+    _ax.plot(_lx, _ly, "o", ms=4, color="#f2b134", mec="black", mew=0.6, zorder=5)
+    for _name, _x, _y in zip(landmarks, _lx, _ly):
+        _ax.annotate(
+            _name, (_x, _y), xytext=(4, 3), textcoords="offset points", fontsize=7.5, zorder=6,
+            annotation_clip=True, path_effects=[_pe.withStroke(linewidth=2, foreground="white")],
+        )
+    _ax.set_xlim(-HALF_ALT, HALF_ALT)
+    _ax.set_ylim(-HALF_ALT, HALF_ALT)
+    _ax.set_axis_off()
+    _ax.set_title(f"{SPILHAUS_ALT}\n(half-width {HALF_ALT/1e6:.3f} Mm vs {HALF/1e6:.3f} Mm for the default)", fontsize=10, pad=12)
+    _fig.tight_layout()
+    mo.vstack([_fig])
+    return HALF_ALT, coast_alt, forward_alt, meta_alt, warped_alt
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+        ## 10. What to take from this
 
         - A projection "existing in PROJ" is necessary, not sufficient. Each package
           that bundles PROJ picks up the feature only when *its* wheel is rebuilt against
@@ -729,6 +891,9 @@ def _(mo):
           when someone asks why a projection "works in QGIS but not in my notebook".
         - The pattern generalises: any new PROJ operation, any new GDAL driver or CLI subcommand
           (`gdal raster reproject`, section 4) flows downstream on the same uneven schedule.
+        - A proj-string is a recipe with hidden defaults. When it matters, write the WKT with the
+          parameters in it (section 8), and do not assume the one authority code you can find
+          describes the map you have in mind.
 
         Re-run this notebook after every `pip install -U` and watch the rows change.
         """

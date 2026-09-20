@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spilhaus tracker: R</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.5rem; }
+  li { margin: .4rem 0; }
+  code { background: #f3f3f3; padding: .1em .3em; border-radius: 3px; }
+</style>
+</head>
+<body>
+<h1>Spilhaus, as it flows downstream from PROJ: R</h1>
+<p>The same document rendered on two Ubuntu runners that differ only in which
+GDAL and PROJ the system carries. Each page's first table says what that runner had.</p>
+<ul>
+  <li><a href="apt/">stock Ubuntu 24.04 (apt)</a> - GDAL 3.8.4 / PROJ 9.4.0 at the time of writing; no Spilhaus expected</li>
+  <li><a href="ubuntugis/">ubuntugis-unstable PPA</a> - whatever that PPA currently ships</li>
+</ul>
+<p>Companions: <a href="../">the Python notebook</a>, <a href="../wasm/">the browser version</a>,
+and the source <a href="../spilhaus.qmd"><code>spilhaus.qmd</code></a>.</p>
+</body>
+</html>

@@ -45,9 +45,28 @@ Environment overrides:
    segments dropped.
 6. **Points.** A dict of landmarks pushed through the forward transform.
 7. **Composite map**, saved as `spilhaus_composite.png`.
+8. **Naming.** WKT2 renderings of the bare proj-string (method named, no parameters), the
+   explicit proj-string, and ESRI:54099 (the only authority code, and a sqrt(2)-larger square),
+   with Hobart's coordinate under each.
+9. **Another centre.** The same method recentred on the Atlantic, so the cut runs through ocean:
+   Spilhaus's contribution was the parameters, not the projection.
 
 The notebook does not require pyproj to support Spilhaus. It uses the first
 capable library it finds (pyproj, then rasterio) and says which one it used.
+
+## R version
+
+`spilhaus.qmd` is the same document in R, with the primitives kept visible:
+**gdalraster** for I/O and the warp, **wk** for vertex-level geometry, **ximage**
+to draw a matrix; sf and terra appear in the provenance table and in a one-line
+appendix. R's version of the problem is different from Python's: on Linux the
+packages share one system `libproj`, so the question is what the system has,
+and the Action renders the document on two Ubuntu runners (stock apt, and the
+ubuntugis-unstable PPA) to show the difference. On macOS and Windows the CRAN
+binaries carry their own PROJ instead.
+
+Render locally with `quarto render spilhaus.qmd`; the same `SPILHAUS_*`
+environment overrides apply.
 
 ## Browser version
 
@@ -63,7 +82,8 @@ schedule, and publishes to GitHub Pages:
 
 - `/` - static HTML export of `spilhaus.py` with outputs baked in (runs the
   real warp against GEBCO in the Action);
-- `/wasm/` - the Pyodide export of `spilhaus_wasm.py`.
+- `/wasm/` - the Pyodide export of `spilhaus_wasm.py`;
+- `/r/apt/` and `/r/ubuntugis/` - `spilhaus.qmd` rendered against each system GDAL/PROJ.
 
 The weekly rebuild is deliberate: it re-resolves the dependencies, so the
 provenance table tracks upstream releases without anyone touching the repo.
