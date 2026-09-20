@@ -41,7 +41,7 @@ def _(mo):
         own `pyproj`, built against its own PROJ. Whether `+proj=spilhaus` works here
         is decided by whichever PROJ the Pyodide maintainers built against - a fourth
         or fifth answer to "what PROJ do I have", alongside the ones in the
-        [full notebook](../index.html).
+        [full notebook](../) and [the R version](../r/).
 
         There is no GDAL in the browser, so this page does the vector and point half
         only: a hand-typed set of landmarks, and Natural Earth coastlines fetched as

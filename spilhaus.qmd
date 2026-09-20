@@ -11,7 +11,11 @@ execute:
   message: false
 ---
 
-The companion to [the Python notebook](../index.html). Same sources, same
+<small>Also in this series: [the Python notebook](../../) | [the browser version](../../wasm/) |
+[the other R runner](../) | [source](https://github.com/mdsumner/spilhaus-tracker) |
+[the story so far](https://www.hypertidy.org/posts/2026-09-20_road-to-spilhaus/)</small>
+
+The companion to [the Python notebook](../../). Same sources, same
 sections, same landmarks, different runtime. The point is the same too:
 `+proj=spilhaus` arrived in **PROJ 9.6.0** (March 2025), and whether *this*
 R session can use it depends on which PROJ each package was linked against.
