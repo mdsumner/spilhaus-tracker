@@ -1,0 +1,67 @@
+name: Build and publish notebooks
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # weekly, so the provenance table re-resolves against current wheels
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      # System GDAL/PROJ so the CLI probes (gdalwarp, projinfo) have something to find.
+      # Ubuntu 24.04 ships GDAL 3.8.4 / PROJ 9.4.0, which predates Spilhaus: that is a
+      # deliberate data point, not a problem to fix.
+      - name: Install system GDAL and PROJ
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q gdal-bin proj-bin
+
+      - name: Export full notebook (static HTML with outputs)
+        env:
+          SPILHAUS_NPIX: "1600"
+          GDAL_HTTP_MAX_RETRY: "5"
+          GDAL_HTTP_RETRY_DELAY: "2"
+        run: |
+          mkdir -p site
+          uvx marimo export html --sandbox spilhaus.py -o site/index.html
+          cp spilhaus_composite.png site/ || true
+
+      - name: Export browser notebook (WASM)
+        run: |
+          uvx marimo export html-wasm --sandbox spilhaus_wasm.py -o site/wasm --mode run
+
+      - name: Copy sources alongside the pages
+        run: |
+          cp spilhaus.py spilhaus_wasm.py README.md site/
+          touch site/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
